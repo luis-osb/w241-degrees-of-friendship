@@ -1,0 +1,306 @@
+---
+title: "W241 Final Project"
+date: "4/09/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Load libraries, data
+
+```{r packages, message=FALSE, warning=FALSE}
+library(data.table)
+library(sandwich)
+library(lmtest)
+library(knitr)
+library(stargazer)
+library(ggplot2)
+library(foreign)
+library(data.table)
+library(stringr)
+library(blockTools)
+library(randomizr)
+library(pwr)
+require(moonBook)
+require(webr)
+library(MASS)
+library(gginference)
+library(ri)
+```
+
+```{r}
+set.seed(2)
+d <- fread("Final_experiment_v2.csv")
+#d <- fread("Final_experiment_v2_extremevals.csv")
+# Base data
+head(d)
+```
+# 2. check for balance
+
+```{r}
+#shuffle data
+rows <- sample(nrow(d))
+shuff <- d[rows, ]
+#old randomization method
+#shuff[, treat := rep(c(1,0), times = c(.N/2,.N/2))]
+#shuff
+#block on data_related_job
+Z <- block_ra(blocks = (shuff$data_related_job), conditions = c(0, 1))
+table(Z, shuff$data_related_job)
+shuff[, treatment := Z]
+#reorder by treatment variable
+shuff <- shuff[order(treatment)]
+tail(shuff)
+#balance checks
+null_mod <- shuff[ , lm(treatment ~ 1)]
+full_mod <- shuff[ , lm(treatment ~ 1 + as.factor(state) +
+                          as.factor(latest_graduation_year) +
+                          data_related_job + subscribers + connectionsCount
+                        + as.factor(degree))]
+summary(full_mod)
+anova_mod <- anova(full_mod, null_mod, test = 'F')
+anova_mod
+nrow(shuff[treatment == 1,])
+nrow(shuff[treatment == 0,])
+```
+
+# 3. Analysis
+
+# Pre check
+
+```{r}
+# drop the rows contain the missing value
+di <- na.omit(d)
+# change the value for data related job to numerical
+di$data_related_job <- as.integer(di$data_related_job == "TRUE")
+```
+
+```{r}
+table(di$treatment,di$accepted_request)
+ggplot(di,aes(x=connectionsCount))+
+  geom_histogram()+
+  facet_grid(~accepted_request)+
+  labs(x="Number of Connections",y="Count of Observations")
+
+```
+
+
+
+
+# Power Analysis
+
+```{r power analysis}
+pwr.p.test(h = ES.h(p1 = 101/(101+64), p2 = 105/(105+60)),
+           sig.level = 0.05,
+           n = 101+64+105+60,
+           alternative = "greater")
+```
+
+```{r}
+t=t.test(di$accepted_request ~ di$treatment, var.equal = FALSE)
+ggttest(t)
+```
+
+
+# Simple Analysis
+We do a chi-squared test of independence to see if the observations are independent.
+
+```{r}
+# For Outcome and State
+tbl <- table(di$degree,di$state)
+tbl
+chisq.test(tbl)
+# For latest_graduation_year and connectionsCount
+tbl <- table(di$degree,di$connectionsCount)
+tbl
+chisq.test(tbl)
+# For data_related_job and connectionsCount
+tbl <- table(di$data_related_job,di$connectionsCount)
+tbl
+chisq.test(tbl)
+```
+
+**A relationship exists between the latest_graduation_year and connectionsCount**
+
+# t- test
+
+```{r}
+x= di[di$treatment == 1, accepted_request]
+y= di[di$treatment == 0, accepted_request]
+mean(x) - mean(y)
+```
+
+```{r t test}
+# Calculate effect size
+cohens_d <- function(x, y) {
+  lx <- length(x)- 1
+  ly <- length(y)- 1
+  md  <- abs(mean(x) - mean(y))        ## mean difference (numerator)
+  csd <- lx * var(x) + ly * var(y)
+  csd <- csd/(lx + ly)
+  csd <- sqrt(csd)                     ## common sd computation
+  cd  <- md/csd                        ## cohen's d
+}
+
+exp2_cohens_d <- cohens_d(
+  di[di$treatment == "0", accepted_request],
+  di[di$treatment == "1", accepted_request]
+)
+
+exp2_cohens_d
+```
+
+```{r}
+t.test(accepted_request ~ treatment, data=di,alternative = 'greater')
+```
+
+# Regression
+
+```{r}
+# Model 0
+m0 <- lm(accepted_request~ 1, data=di)
+stargazer(m0,type='text')
+coeftest(m0, vcovHC(m0)) # Robust se
+```
+
+
+```{r}
+# Model 1 - Basic model
+m1 <- lm(accepted_request~
+           treatment,data=d)
+stargazer(m1,type='text')
+coeftest(m1, vcovHC(m1)) # Robust se
+```
+```{r}
+anova_mod <- anova(m0,m1, test='F')
+anova_mod
+```
+
+```{r}
+# Model 2 - Treatment & connectionsCount
+m2 <- lm(accepted_request~treatment+ connectionsCount,data=di)
+stargazer(m2,type='text')
+coeftest(m2, vcovHC(m2)) # Robust se
+```
+
+```{r}
+# Model 3 - Treatment & Data related job & connectionsCount and subcriberCount covariates.
+m3 <- di[,lm(accepted_request~
+           treatment
+         +data_related_job
+         +connectionsCount * subscribers)]
+stargazer(m3,type='text')
+coeftest(m3, vcovHC(m3)) # Robust se
+```
+
+```{r}
+# Model 4 - Treatment & interaction between masters degree * treatment
+
+
+di[, masters_degree := ifelse(degree %in% c("Master"),"Yes","No")]
+
+m4 <- di[,lm(accepted_request~
+           treatment
+         +masters_degree
+         +treatment * masters_degree)]
+stargazer(m4,type='text')
+coeftest(m4, vcovHC(m4)) # Robust se
+```
+
+```{r}
+
+#Model 5 - Treatment & interaction between treatment and West Coast
+
+di[, west_coast := ifelse(state %in% c("Washington", "California", "Oregon"),1, 0)]
+
+
+m5 <- di[,lm(accepted_request~
+           treatment  + west_coast 
+ + treatment*west_coast)]
+
+
+stargazer(m5,type='text')
+coeftest(m5, vcovHC(m5)) 
+```
+
+
+```{r}
+#Final stargazer
+
+stargazer(
+  m1, m2, m4, m5,
+  type = 'text',
+  se=list(sqrt(diag(vcovHC(m1))),
+          (sqrt(diag(vcovHC(m2)))),
+          (sqrt(diag(vcovHC(m4)))),
+          (sqrt(diag(vcovHC(m5))))),
+      
+  column.labels =c("Model 1","Model 2","Model 3", "Model 4"),
+  header=F
+  )
+
+
+```
+
+
+
+## Randomization Inference
+
+Next we use randomization inference (assuming a Sharp Null of No Effect) to understand if our observation is consistent with an empirical null distribution.
+
+```{r}
+# Define distributions
+y <- di$accepted_request
+Z <- di$treatment
+
+blk1 <- as.numeric(di$data_related_job) # We block by data related job
+blk2 <- as.numeric(di$state) # We block by state
+blk3 <- as.numeric(di$degree) # We block by degree
+```
+
+```{r}
+# By data related job
+perms <- genperms(Z, clustvar = NULL, blockvar = blk1)
+probs <- genprobexact(Z, clustvar = NULL, blockvar = blk1) # probability of treatment
+ate <- estate(y,Z,prob=probs) # estimate the ATE
+Ys <- genouts(y,Z,ate=0) # generate potential outcomes under sharp null of no effect
+distout <- gendist(Ys,perms, prob=probs) # generate sampling dist. under sharp null
+dispdist(distout, ate, quantiles = c(0.025, 0.975), display.plot = TRUE) # display characteristics of sampling dist. for inference
+```
+
+```{r}
+# By state
+perms <- genperms(Z, clustvar = NULL, blockvar = blk2)
+probs <- genprobexact(Z, clustvar = NULL, blockvar = blk2) # probability of treatment
+ate <- estate(y,Z,prob=probs) # estimate the ATE
+Ys <- genouts(y,Z,ate=0) # generate potential outcomes under sharp null of no effect
+distout <- gendist(Ys,perms, prob=probs) # generate sampling dist. under sharp null
+dispdist(distout, ate, quantiles = c(0.025, 0.975), display.plot = TRUE) # display characteristics of sampling dist. for inference
+```
+
+```{r}
+# By degree
+perms <- genperms(Z, clustvar = NULL, blockvar = blk3)
+probs <- genprobexact(Z, clustvar = NULL, blockvar = blk3) # probability of treatment
+ate <- estate(y,Z,prob=probs) # estimate the ATE
+Ys <- genouts(y,Z,ate=0) # generate potential outcomes under sharp null of no effect
+distout <- gendist(Ys,perms, prob=probs) # generate sampling dist. under sharp null
+dispdist(distout, ate, quantiles = c(0.025, 0.975), display.plot = TRUE) # display characteristics of sampling dist. for inference
+```
+```{r}
+#P-value for actual data
+p.val.actual = sum(abs(distout) > ate) / length(distout)
+p.val.actual
+
+#get accept rate by treatment or control
+actual.accept.rate.by.treatment <- di[, mean(accepted_request), by = c("treatment")]
+actual.accept.rate.by.treatment
+```
+
+We observed a higher accept rate in the treatment group, however, we cannot reject the null hypothesis of no effect.
+
+
+# 4. Conclusion
+Despite running a few different models, we find no evidence that the MIDS enhance Linkedin connection acceptance.
